@@ -43,6 +43,22 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'The session is invalid or expired.' }, { status: 401 });
     }
 
+    const { data: callerProfile, error: profileError } = await callerClient
+      .from('profiles')
+      .select('role, active')
+      .eq('id', user.id)
+      .maybeSingle();
+    if (profileError) {
+      console.error('Failed to verify onboarding email caller:', profileError);
+      return NextResponse.json({ error: 'Unable to verify this account.' }, { status: 500 });
+    }
+    if (
+      !callerProfile?.active ||
+      !['super_admin', 'hostel_owner', 'caretaker'].includes(callerProfile.role)
+    ) {
+      return NextResponse.json({ error: 'Only active hostel staff can send onboarding emails.' }, { status: 403 });
+    }
+
     const { data: accessibleTenant, error: accessError } = await callerClient
       .from('tenants')
       .select('id, hostel_id')

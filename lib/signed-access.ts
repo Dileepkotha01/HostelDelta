@@ -5,16 +5,22 @@ export type SignedAccessType = 'invoice_pay' | 'tenant_view';
 type SignedAccessPayload = {
   typ: SignedAccessType;
   id: string;
+  iat?: number;
   exp: number;
 };
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+const ACCESS_TOKEN_TTL_SECONDS: Record<SignedAccessType, number> = {
+  invoice_pay: 60 * 60 * 24,
+  tenant_view: 60 * 60 * 24 * 7,
+};
+
 function getSignedLinkSecret(): string {
-  const secret = process.env.SIGNED_LINK_SECRET || process.env.CRON_SECRET;
-  if (!secret) {
-    throw new Error('SIGNED_LINK_SECRET is not configured.');
+  const secret = process.env.SIGNED_LINK_SECRET;
+  if (!secret || Buffer.byteLength(secret, 'utf8') < 32) {
+    throw new Error('SIGNED_LINK_SECRET must be configured with at least 32 bytes of random data.');
   }
   return secret;
 }
@@ -41,15 +47,24 @@ function signBody(body: string): string {
 export function createSignedAccessToken(
   type: SignedAccessType,
   id: string,
-  expiresInSeconds = 60 * 60 * 24 * 30,
+  expiresInSeconds = ACCESS_TOKEN_TTL_SECONDS[type],
 ): string {
   if (!UUID_RE.test(id)) {
     throw new Error('Signed access id must be a valid UUID.');
   }
+  if (
+    !Number.isSafeInteger(expiresInSeconds) ||
+    expiresInSeconds <= 0 ||
+    expiresInSeconds > ACCESS_TOKEN_TTL_SECONDS[type]
+  ) {
+    throw new Error('Signed access token lifetime is invalid.');
+  }
+  const issuedAt = Math.floor(Date.now() / 1000);
   const payload: SignedAccessPayload = {
     typ: type,
     id: id.toLowerCase(),
-    exp: Math.floor(Date.now() / 1000) + expiresInSeconds,
+    iat: issuedAt,
+    exp: issuedAt + expiresInSeconds,
   };
   const body = toBase64Url(JSON.stringify(payload));
   return `${body}.${signBody(body)}`;
@@ -90,13 +105,27 @@ export function verifySignedAccessToken(
 
   try {
     const payload = JSON.parse(fromBase64Url(body).toString('utf8')) as SignedAccessPayload;
-    if (payload.typ !== type || typeof payload.id !== 'string' || typeof payload.exp !== 'number') {
+    if (
+      payload.typ !== type ||
+      typeof payload.id !== 'string' ||
+      !Number.isSafeInteger(payload.exp) ||
+      (payload.iat !== undefined && !Number.isSafeInteger(payload.iat))
+    ) {
       return { ok: false, error: 'Invalid access token payload.' };
     }
     if (payload.id.toLowerCase() !== id.toLowerCase()) {
       return { ok: false, error: 'Access token does not match this resource.' };
     }
-    if (payload.exp < Math.floor(Date.now() / 1000)) {
+    const now = Math.floor(Date.now() / 1000);
+    if (
+      payload.exp <= now ||
+      payload.exp - now > ACCESS_TOKEN_TTL_SECONDS[type] ||
+      (payload.iat !== undefined && (
+        payload.iat > now + 60 ||
+        payload.exp <= payload.iat ||
+        payload.exp - payload.iat > ACCESS_TOKEN_TTL_SECONDS[type]
+      ))
+    ) {
       return { ok: false, error: 'This access link has expired.' };
     }
     return { ok: true };

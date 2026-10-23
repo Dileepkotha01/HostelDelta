@@ -31,13 +31,27 @@ const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-const DEMO_EMAIL = process.env.DEMO_EMAIL || 'demo.owner@hostelhub.test';
-const DEMO_PASSWORD = process.env.DEMO_PASSWORD || 'DemoHostel123!';
+const DEMO_EMAIL = process.env.DEMO_EMAIL;
+const DEMO_PASSWORD = process.env.DEMO_PASSWORD;
+const DEMO_SEED_TARGET_URL = process.env.DEMO_SEED_TARGET_URL;
 
 function log(msg) { console.log(`[seed] ${msg}`); }
 function fail(msg) { console.error(`[seed] ERROR: ${msg}`); process.exit(1); }
 
 if (!url || !anonKey) fail('Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY in .env');
+if (process.env.NODE_ENV === 'production') fail('Demo seeding is disabled when NODE_ENV=production.');
+if (process.env.ALLOW_DEMO_SEED !== 'true') fail('Set ALLOW_DEMO_SEED=true only for a development/test project.');
+if (!DEMO_EMAIL || !DEMO_PASSWORD || DEMO_PASSWORD.length < 16) {
+  fail('Set DEMO_EMAIL and a unique DEMO_PASSWORD of at least 16 characters; no default credentials are provided.');
+}
+if (!DEMO_SEED_TARGET_URL) fail('Set DEMO_SEED_TARGET_URL to the exact Supabase project URL before seeding.');
+try {
+  if (new URL(DEMO_SEED_TARGET_URL).origin !== new URL(url).origin) {
+    fail('DEMO_SEED_TARGET_URL does not match NEXT_PUBLIC_SUPABASE_URL. Refusing to modify this project.');
+  }
+} catch {
+  fail('DEMO_SEED_TARGET_URL or NEXT_PUBLIC_SUPABASE_URL is not a valid URL.');
+}
 
 async function main() {
   const admin = serviceKey
@@ -347,7 +361,7 @@ async function main() {
   console.log(`Pending dues: ₹${pendingDues.toLocaleString('en-IN')}`);
   console.log('\n--- Login Credentials ---');
   console.log(`Email:    ${DEMO_EMAIL}`);
-  console.log(`Password: ${DEMO_PASSWORD}`);
+  console.log('Password: DEMO_PASSWORD from your local environment');
   console.log(`URL:      http://localhost:3000/login`);
   console.log('-------------------------\n');
 }

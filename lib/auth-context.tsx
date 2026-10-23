@@ -129,14 +129,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     setProfile((prev) => (prev ? { ...prev, hostel_id: hostelId } : null));
 
-    try {
-      await supabase
-        .from('profiles')
-        .update({ hostel_id: hostelId })
-        .eq('id', session.user.id);
-    } catch (e) {
-      console.warn('DB profile update for hostel_id ignored:', e);
-    }
   }
 
   async function signOut() {

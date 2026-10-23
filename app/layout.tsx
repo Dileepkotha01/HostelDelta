@@ -6,6 +6,7 @@ import { ThemeProvider } from '@/lib/theme-provider';
 import { Toaster } from '@/components/ui/toaster';
 import { ServiceWorkerRegister } from '@/components/sw-register';
 import Script from 'next/script';
+import { headers } from 'next/headers';
 
 const inter = Inter({ subsets: ['latin'], display: 'swap' });
 
@@ -96,15 +97,18 @@ export default function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
+  const nonce = headers().get('x-nonce') || undefined;
+
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
         {/* Sync theme script: runs before paint to prevent dark/light flash */}
-        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
-        <Script src="https://checkout.razorpay.com/v1/checkout.js" strategy="afterInteractive" />
+        <script nonce={nonce} dangerouslySetInnerHTML={{ __html: themeScript }} />
+        <Script nonce={nonce} src="https://checkout.razorpay.com/v1/checkout.js" strategy="afterInteractive" />
         <link rel="icon" href="/icon-192.svg" type="image/svg+xml" />
         <link rel="apple-touch-icon" href="/icon-192.svg" />
         <script
+          nonce={nonce}
           type="application/ld+json"
           dangerouslySetInnerHTML={{
             __html: JSON.stringify({

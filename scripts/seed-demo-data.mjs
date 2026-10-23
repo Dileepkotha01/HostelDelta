@@ -1,11 +1,12 @@
 /**
  * Seeds HostelHub with demo data for local testing.
  *
- * Usage: node scripts/seed-demo-data.mjs
+ * Usage (development/test projects only): node scripts/seed-demo-data.mjs
  *
  * Env (from .env): NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY
  * Optional: SUPABASE_SERVICE_ROLE_KEY (creates user without email confirmation)
- * Optional: DEMO_EMAIL, DEMO_PASSWORD (defaults below)
+ * Required for an explicit test run: ALLOW_DEMO_SEED=true, DEMO_SEED_TARGET_URL,
+ * DEMO_EMAIL, and a unique DEMO_PASSWORD of at least 16 characters.
  */
 
 import { createClient } from '@supabase/supabase-js';
@@ -36,8 +37,9 @@ const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-const DEMO_EMAIL = process.env.DEMO_EMAIL || 'demo.owner@hostelhub.test';
-const DEMO_PASSWORD = process.env.DEMO_PASSWORD || 'DemoHostel123!';
+const DEMO_EMAIL = process.env.DEMO_EMAIL;
+const DEMO_PASSWORD = process.env.DEMO_PASSWORD;
+const DEMO_SEED_TARGET_URL = process.env.DEMO_SEED_TARGET_URL;
 
 const SAMPLE_TENANTS = [
   { name: 'Arjun Mehta', phone: '+919876543210', rent: 9000 },
@@ -59,6 +61,25 @@ function fail(msg) {
 
 if (!url || !anonKey) {
   fail('Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY in .env');
+}
+if (process.env.NODE_ENV === 'production') {
+  fail('Demo seeding is disabled when NODE_ENV=production.');
+}
+if (process.env.ALLOW_DEMO_SEED !== 'true') {
+  fail('Set ALLOW_DEMO_SEED=true only for a development/test project.');
+}
+if (!DEMO_EMAIL || !DEMO_PASSWORD || DEMO_PASSWORD.length < 16) {
+  fail('Set DEMO_EMAIL and a unique DEMO_PASSWORD of at least 16 characters; no default credentials are provided.');
+}
+if (!DEMO_SEED_TARGET_URL) {
+  fail('Set DEMO_SEED_TARGET_URL to the exact Supabase project URL before seeding.');
+}
+try {
+  if (new URL(DEMO_SEED_TARGET_URL).origin !== new URL(url).origin) {
+    fail('DEMO_SEED_TARGET_URL does not match NEXT_PUBLIC_SUPABASE_URL. Refusing to modify this project.');
+  }
+} catch {
+  fail('DEMO_SEED_TARGET_URL or NEXT_PUBLIC_SUPABASE_URL is not a valid URL.');
 }
 
 async function ensureDemoUser(admin, authClient) {
@@ -327,7 +348,7 @@ async function main() {
   function printSummary() {
     console.log('\n--- Demo login (use in the app) ---');
     console.log(`Email:    ${DEMO_EMAIL}`);
-    console.log(`Password: ${DEMO_PASSWORD}`);
+    console.log('Password: DEMO_PASSWORD from your local environment');
     console.log('URL:      http://localhost:3000/login');
     console.log('-----------------------------------\n');
   }

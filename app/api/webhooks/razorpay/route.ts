@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { createHmac, timingSafeEqual } from 'crypto';
+import Razorpay from 'razorpay';
 import { createSupabaseAdmin } from '@/lib/supabase/admin';
+import { RequestBodyTooLargeError, readTextBodyWithLimit } from '@/lib/request-body';
 import {
   HOSTEL_SUBSCRIPTION_MONTHLY_PRICE_PAISE,
   HOSTEL_SUBSCRIPTION_TRIAL_DAYS,
@@ -40,7 +42,15 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Payment webhook is not configured.' }, { status: 503 });
   }
 
-  const rawBody = await request.text();
+  let rawBody: string;
+  try {
+    rawBody = await readTextBodyWithLimit(request, 256 * 1024);
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof RequestBodyTooLargeError ? 'Webhook payload is too large.' : 'Invalid webhook payload.' },
+      { status: error instanceof RequestBodyTooLargeError ? 413 : 400 },
+    );
+  }
   const signature = request.headers.get('x-razorpay-signature');
   if (!signature || !/^[a-f0-9]{64}$/i.test(signature)) {
     return NextResponse.json({ error: 'Invalid webhook signature.' }, { status: 400 });
@@ -185,78 +195,128 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: 'Subscription payload is incomplete.' }, { status: 400 });
       }
 
-      const statusByEvent: Record<string, string> = {
-        'subscription.authenticated': 'TRIALING',
-        'subscription.activated': 'TRIALING',
-        'subscription.charged': 'ACTIVE',
-        'subscription.halted': 'HALTED',
-        'subscription.cancelled': 'CANCELLED',
-        'subscription.completed': 'EXPIRED',
-      };
-      const subscriptionUpdate: Record<string, string | null> = {
-        status: statusByEvent[payload.event || ''],
-      };
-      if (subscription.current_end) {
-        subscriptionUpdate.current_period_end = new Date(subscription.current_end * 1000).toISOString();
-      }
-      if (subscription.start_at) {
-        subscriptionUpdate.trial_ends_at = new Date(subscription.start_at * 1000).toISOString();
-      }
-      if (subscription.customer_id) subscriptionUpdate.razorpay_customer_id = subscription.customer_id;
-      if (subscription.payment_method) subscriptionUpdate.payment_method = subscription.payment_method;
-      if (payload.event === 'subscription.authenticated') {
-        subscriptionUpdate.authorized_at = new Date().toISOString();
-      }
-
-      const { error } = await supabase
+      const { data: ownerSubscription, error: lookupError } = await supabase
         .from('owner_subscriptions')
-        .update(subscriptionUpdate)
+        .select('id, hostel_id, hostel_owner_id, status, billing_mode, trial_ends_at')
         .eq('razorpay_subscription_id', subscription.id)
-        .neq('status', 'PROVISIONING');
-
-      if (error) {
-        console.error('Failed to update owner subscription from webhook:', error);
-        return NextResponse.json({ error: 'Unable to update subscription status.' }, { status: 500 });
+        .maybeSingle();
+      if (lookupError) {
+        console.error('Unable to find subscription for webhook:', lookupError);
+        return NextResponse.json({ error: 'Unable to find the subscription.' }, { status: 500 });
       }
 
       const payment = payload.payload?.payment?.entity;
+      if (!ownerSubscription) {
+        // This can happen when a provider event races the local insert. Ack unknown
+        // subscriptions rather than retrying indefinitely or mutating by ID alone.
+        return NextResponse.json({ success: true });
+      }
+      if (payload.event === 'subscription.charged' && (
+        !payment?.id ||
+        typeof payment.amount !== 'number' ||
+        !Number.isInteger(payment.amount) ||
+        payment.amount !== HOSTEL_SUBSCRIPTION_MONTHLY_PRICE_PAISE ||
+        payment.currency !== 'INR' ||
+        ownerSubscription?.billing_mode !== 'AUTO_PAY'
+      )) {
+        return NextResponse.json({ error: 'Recurring subscription payment does not match the configured plan.' }, { status: 400 });
+      }
+
+      const keyId = process.env.RAZORPAY_KEY_ID;
+      const keySecret = process.env.RAZORPAY_KEY_SECRET;
+      if (!keyId || !keySecret) {
+        return NextResponse.json({ error: 'Subscription verification is not configured.' }, { status: 503 });
+      }
+
+      // Webhooks can arrive out of order. Read the canonical gateway state before
+      // applying a status so an old authenticated/activated event cannot undo a
+      // later charge, cancellation, or halt.
+      const razorpay = new Razorpay({ key_id: keyId, key_secret: keySecret });
+      const currentSubscription = await razorpay.subscriptions.fetch(subscription.id);
+      const trialEnd = ownerSubscription.trial_ends_at
+        ? new Date(ownerSubscription.trial_ends_at).getTime()
+        : 0;
+      const trialIsActive = trialEnd > Date.now();
+      const canonicalStatus = currentSubscription.status;
+      let nextStatus: string | null = null;
+
+      if (canonicalStatus === 'halted') {
+        nextStatus = 'HALTED';
+      } else if (canonicalStatus === 'cancelled') {
+        nextStatus = 'CANCELLED';
+      } else if (canonicalStatus === 'completed' || canonicalStatus === 'expired') {
+        nextStatus = 'EXPIRED';
+      } else if (canonicalStatus === 'authenticated' || canonicalStatus === 'active') {
+        if (trialIsActive) {
+          nextStatus = 'TRIALING';
+        } else if (
+          canonicalStatus === 'active' &&
+          (payload.event === 'subscription.charged' || ownerSubscription.status === 'ACTIVE')
+        ) {
+          nextStatus = 'ACTIVE';
+        }
+      } else if (canonicalStatus === 'created' && ownerSubscription.status === 'CREATED') {
+        nextStatus = 'CREATED';
+      }
+
+      if (ownerSubscription.status !== 'PROVISIONING') {
+        const subscriptionUpdate: Record<string, string | null> = {};
+        if (nextStatus) subscriptionUpdate.status = nextStatus;
+        if (currentSubscription.current_end) {
+          subscriptionUpdate.current_period_end = new Date(currentSubscription.current_end * 1000).toISOString();
+        }
+        if (currentSubscription.start_at) {
+          subscriptionUpdate.trial_ends_at = new Date(currentSubscription.start_at * 1000).toISOString();
+        }
+        if (currentSubscription.customer_id) {
+          subscriptionUpdate.razorpay_customer_id = currentSubscription.customer_id;
+        }
+        if (currentSubscription.payment_method) {
+          subscriptionUpdate.payment_method = currentSubscription.payment_method;
+        }
+        if (payload.event === 'subscription.authenticated') {
+          subscriptionUpdate.authorized_at = new Date().toISOString();
+        }
+
+        if (Object.keys(subscriptionUpdate).length > 0) {
+          const { error: updateError } = await supabase
+            .from('owner_subscriptions')
+            .update(subscriptionUpdate)
+            .eq('id', ownerSubscription.id)
+            .neq('status', 'PROVISIONING');
+          if (updateError) {
+            console.error('Failed to update owner subscription from webhook:', updateError);
+            return NextResponse.json({ error: 'Unable to update subscription status.' }, { status: 500 });
+          }
+        }
+      }
+
       if (
         payload.event === 'subscription.charged' &&
         payment?.id &&
         typeof payment.amount === 'number' &&
-        Number.isInteger(payment.amount) &&
-        payment.currency === 'INR'
+        ownerSubscription.hostel_id &&
+        ownerSubscription.hostel_owner_id
       ) {
-        const { data: ownerSubscription, error: lookupError } = await supabase
-          .from('owner_subscriptions')
-          .select('id, hostel_id, hostel_owner_id')
-          .eq('razorpay_subscription_id', subscription.id)
-          .maybeSingle();
-        if (lookupError) {
-          console.error('Unable to find subscription for recurring payment history:', lookupError);
-          return NextResponse.json({ error: 'Unable to link recurring payment to its subscription.' }, { status: 500 });
-        }
-        if (ownerSubscription?.hostel_id && ownerSubscription.hostel_owner_id) {
-          const { error: historyError } = await supabase
-            .from('owner_subscription_payments')
-            .upsert({
-              owner_subscription_id: ownerSubscription.id,
-              hostel_id: ownerSubscription.hostel_id,
-              hostel_owner_id: ownerSubscription.hostel_owner_id,
-              razorpay_order_id: payment.order_id || null,
-              razorpay_payment_id: payment.id,
-              amount: payment.amount / 100,
-              currency: payment.currency,
-              status: 'PAID',
-              payment_method: payment.method || null,
-              paid_at: typeof payment.created_at === 'number'
-                ? new Date(payment.created_at * 1000).toISOString()
-                : new Date().toISOString(),
-            }, { onConflict: 'razorpay_payment_id', ignoreDuplicates: true });
-          if (historyError) {
-            console.error('Unable to record recurring hostel subscription payment:', historyError);
-            return NextResponse.json({ error: 'Unable to record recurring subscription payment.' }, { status: 500 });
-          }
+        const { error: historyError } = await supabase
+          .from('owner_subscription_payments')
+          .upsert({
+            owner_subscription_id: ownerSubscription.id,
+            hostel_id: ownerSubscription.hostel_id,
+            hostel_owner_id: ownerSubscription.hostel_owner_id,
+            razorpay_order_id: payment.order_id || null,
+            razorpay_payment_id: payment.id,
+            amount: payment.amount / 100,
+            currency: payment.currency,
+            status: 'PAID',
+            payment_method: payment.method || null,
+            paid_at: typeof payment.created_at === 'number'
+              ? new Date(payment.created_at * 1000).toISOString()
+              : new Date().toISOString(),
+          }, { onConflict: 'razorpay_payment_id', ignoreDuplicates: true });
+        if (historyError) {
+          console.error('Unable to record recurring hostel subscription payment:', historyError);
+          return NextResponse.json({ error: 'Unable to record recurring subscription payment.' }, { status: 500 });
         }
       }
     }

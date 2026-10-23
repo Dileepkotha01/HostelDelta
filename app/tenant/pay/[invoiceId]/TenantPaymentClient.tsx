@@ -4,7 +4,6 @@ import React, { useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Loader2, CheckCircle2, XCircle, Building2, User, Calendar } from 'lucide-react';
-import Script from 'next/script';
 import { useToast } from '@/hooks/use-toast';
 
 export function TenantPaymentClient({
@@ -94,8 +93,6 @@ export function TenantPaymentClient({
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4">
-      <Script src="https://checkout.razorpay.com/v1/checkout.js" />
-      
       {/* 
         Responsive Modal Alert Banner Overlays (Fixed in center)
       */}

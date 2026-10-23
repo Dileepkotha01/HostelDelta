@@ -26,6 +26,7 @@ import { buildInvoicePayUrl, verifySignedAccessToken } from '@/lib/signed-access
 export const metadata: Metadata = {
   title: 'Resident Profile & Rent History | Kupera',
   description: 'View your verified hostel resident details, room allocation, and monthly rent payment history.',
+  robots: { index: false, follow: false, noarchive: true },
 };
 
 const UUID_RE =
@@ -56,7 +57,7 @@ export default async function TenantViewPage({ params, searchParams }: PageProps
   // 1. Fetch tenant details (service role only after signed-link verification)
   const { data: tenant, error: tenantErr } = await supabase
     .from('tenants')
-    .select('*')
+    .select('id, full_name, phone, email, assigned_bed_id, hostel_id, monthly_rent, rent_due_day, status, security_deposit, agreement_start, agreement_end')
     .eq('id', tenantId)
     .single();
 
@@ -70,7 +71,7 @@ export default async function TenantViewPage({ params, searchParams }: PageProps
   if (tenant.assigned_bed_id) {
     const { data: bed } = await supabase
       .from('beds')
-      .select('*, room:rooms(*)')
+      .select('bed_label, room:rooms(room_number, room_type)')
       .eq('id', tenant.assigned_bed_id)
       .single();
     if (bed) {
@@ -82,21 +83,21 @@ export default async function TenantViewPage({ params, searchParams }: PageProps
   // 2. Fetch hostel details
   const { data: hostel } = await supabase
     .from('hostels')
-    .select('*')
+    .select('name, address')
     .eq('id', tenant.hostel_id)
     .single();
 
   // 3. Fetch all invoices for rent payment records
   const { data: invoices } = await supabase
     .from('invoices')
-    .select('*')
+    .select('id, invoice_number, billing_month, billing_year, amount, amount_paid, status, due_date')
     .eq('tenant_id', tenant.id)
     .order('created_at', { ascending: false });
 
   // 4. Fetch rent transactions & receipts
   const { data: transactions } = await supabase
     .from('rent_transactions')
-    .select('*, receipt:payment_receipts(*)')
+    .select('id, invoice_id, rent_month, rent_year, status, receipt:payment_receipts(pdf_url)')
     .eq('tenant_id', tenant.id)
     .order('created_at', { ascending: false });
 
@@ -191,26 +192,6 @@ export default async function TenantViewPage({ params, searchParams }: PageProps
                 </div>
               )}
 
-              {tenant.emergency_contact_name && (
-                <div className="pt-2 border-t border-slate-800/80">
-                  <p className="text-[11px] text-slate-400">Emergency Contact</p>
-                  <p className="font-semibold text-slate-200 mt-0.5">
-                    {tenant.emergency_contact_name} ({tenant.emergency_contact_phone || '—'})
-                  </p>
-                </div>
-              )}
-
-              <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between">
-                <div>
-                  <p className="text-[11px] text-slate-400">ID Verification</p>
-                  <p className="font-semibold text-slate-200 uppercase text-xs mt-0.5">
-                    {tenant.id_proof_type || 'Aadhaar'}
-                  </p>
-                </div>
-                <Badge variant="outline" className="bg-emerald-500/10 text-emerald-400 border-emerald-500/20 text-[10px]">
-                  <CheckCircle2 className="w-3 h-3 mr-1" /> Verified
-                </Badge>
-              </div>
             </CardContent>
           </Card>
 
@@ -336,8 +317,13 @@ export default async function TenantViewPage({ params, searchParams }: PageProps
                       const periodName = inv.billing_month ? `${monthNames[inv.billing_month - 1]} ${inv.billing_year}` : 'Initial Advance';
 
                       // Find matching receipt from transactions if exists
-                      const matchingTx = transactions?.find(
-                        (t) => (t.rent_month === monthNames[inv.billing_month - 1] && t.rent_year === inv.billing_year) || t.status === 'PAID'
+                      const matchingTx = transactions?.find((transaction) =>
+                        transaction.status === 'PAID' && (
+                          transaction.invoice_id === inv.id ||
+                          (!transaction.invoice_id &&
+                            transaction.rent_month === monthNames[inv.billing_month - 1] &&
+                            transaction.rent_year === inv.billing_year)
+                        )
                       );
                       const receiptPdf = matchingTx?.receipt?.[0]?.pdf_url;
 

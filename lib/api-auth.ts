@@ -22,9 +22,9 @@ export function timingSafeSecretEqual(supplied: string, expected: string): boole
 }
 
 export function requireCronSecret(request: Request): NextResponse | null {
-  const expected = process.env.CRON_SECRET || process.env.EDGE_FUNCTION_SECRET;
-  if (!expected) {
-    return NextResponse.json({ error: 'Cron authentication is not configured.' }, { status: 503 });
+  const expected = process.env.CRON_SECRET;
+  if (!expected || Buffer.byteLength(expected, 'utf8') < 32) {
+    return NextResponse.json({ error: 'CRON_SECRET must contain at least 32 bytes of random data.' }, { status: 503 });
   }
   const authorization = request.headers.get('authorization') || '';
   const supplied = authorization.startsWith('Bearer ') ? authorization.slice(7).trim() : '';

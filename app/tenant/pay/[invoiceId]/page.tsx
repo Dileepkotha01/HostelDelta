@@ -1,10 +1,16 @@
 import { notFound } from 'next/navigation';
+import type { Metadata } from 'next';
 import { TenantPaymentClient } from './TenantPaymentClient';
 import { createSupabaseAdmin } from '@/lib/supabase/admin';
 import { verifySignedAccessToken } from '@/lib/signed-access';
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export const metadata: Metadata = {
+  title: 'Rent payment | Kupera',
+  robots: { index: false, follow: false, noarchive: true },
+};
 
 export default async function TenantPayPage({
   params,

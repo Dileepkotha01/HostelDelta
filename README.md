@@ -78,7 +78,7 @@ Use `http://localhost:3000` for the marketing homepage. Local portals are path-b
 Sign up with your own email first. The database trigger provisions the account profile only. A hostel, floors, rooms, and beds are created only after you complete and submit the Add Hostel form. The demo credentials below are only available after you have successfully run the optional demo seeder.
 
 ### 6. Optional local demo data
-To seed demo records, configure `SUPABASE_SERVICE_ROLE_KEY` and the Supabase URL/public key in `.env`, then run:
+Demo seed scripts are intentionally disabled by default. Use a dedicated development Supabase project, set its exact URL in `DEMO_SEED_TARGET_URL`, provide a unique `DEMO_EMAIL` and `DEMO_PASSWORD` (at least 16 characters), then explicitly set `ALLOW_DEMO_SEED=true`. Never set these controls for production.
 
 ```powershell
 npm run seed:reseed
@@ -196,41 +196,22 @@ All database tables enforce PostgreSQL Row-Level Security:
 
 ---
 
-## ☁️ Deploying to Cloudflare Pages & Supabase
+## ☁️ Deploying to Netlify & Supabase
 
-HostelHub is pre-configured for deployment with **Cloudflare Pages** (frontend CDN) and **Supabase** (backend DB, Auth & Storage):
+This repository is configured for a Next.js server deployment using the Netlify Next.js plugin in `netlify.toml`. It uses middleware, dynamic resident pages, and API route handlers; it is **not** a static export. Do not use `out` as the build output or a static-only Cloudflare Pages configuration.
 
-### Step 1: Backend Deployment (Supabase)
+### Step 1: Backend deployment (Supabase)
 1. Create a project at [supabase.com](https://supabase.com).
-2. Go to **SQL Editor** in Supabase and run the migrations in [supabase/migrations/](file:///c:/Users/Admin/OneDrive/Desktop/project/supabase/migrations) in order:
-   - `20261001091249_hostel_management_schema.sql`
-   - `20261001094517_harden_hostel_access_controls.sql`
-   - `20261001100709_create_owner_workspace_setup.sql`
-   - `20261007_razorpay_payment_engine.sql`
-   - `20261012180000_harden_auth_profile_provisioning.sql`
-   - `20261013120000_secure_rent_payment_processing.sql`
-3. In **Storage**, create a bucket named `kyc-documents` (private, with file size limit ~10MB).
-4. Run the seed script to populate initial demo data if needed:
-   ```bash
-   npm run seed:reseed
-   ```
+2. Apply **every** SQL migration in `supabase/migrations/` in ascending filename order, including `20261018000000_harden_active_access_and_rent_ledger.sql`. This latest migration requires active profiles in RLS policies, restricts sensitive profile/hostel updates, removes client-side rent transaction insertion, and sets KYC bucket restrictions.
+3. Configure Supabase Auth redirect URLs and storage from the earlier setup steps. Keep the KYC bucket private.
 
-### Step 2: Frontend Deployment (Cloudflare Pages)
-1. Push this repository to your GitHub or GitLab.
-2. In the [Cloudflare Dashboard](https://dash.cloudflare.com/):
-   - Go to **Workers & Pages** -> **Create application** -> **Pages** -> **Connect to Git**.
-   - Select your repository.
-3. Configure Build Settings:
-   - **Framework preset**: `None` or `Next.js (Static HTML Export)`
-   - **Build command**: `npm run build`
-   - **Build output directory**: `out`
-4. Set Environment Variables in Cloudflare Pages:
-   - `NEXT_PUBLIC_SUPABASE_URL`: Your Supabase Project URL (`https://xyz.supabase.co`)
-   - `NEXT_PUBLIC_SUPABASE_ANON_KEY`: Your Supabase public anonymous key
-   - `NODE_VERSION`: `20.10.0`
-5. Click **Save and Deploy**. Cloudflare will build and distribute the app across its global edge network.
+### Step 2: Netlify deployment
+1. Connect the repository to Netlify and use the checked-in `netlify.toml` configuration (`npx next build` plus `@netlify/plugin-nextjs`).
+2. Do not override the output directory with `out` or enable static export. API handlers, middleware, private links, and webhook processing need a Next.js server runtime.
+3. Configure the required production environment variables from `.env.example` in Netlify. Set `NEXT_PUBLIC_APP_URL` to the canonical production root or app origin so middleware can reject requests with unrecognized Host headers. Use production Supabase and Razorpay credentials, distinct random values for `SIGNED_LINK_SECRET` and `CRON_SECRET`, and keep service-role, SMTP, Razorpay secret, and webhook secret values server-only.
+4. Configure DNS and TLS for the marketing, app, and admin hostnames. Ensure the deployment platform preserves the requested host and HTTPS scheme for middleware routing.
 
-### Step 3: Configure Auth Redirect URL in Supabase
+### Step 3: Configure Auth redirect URLs in Supabase
 In your Supabase project under **Authentication** -> **URL Configuration**:
 - Set **Site URL** to your production root domain.
 - Add the production root, manager, and admin origins with `/auth/callback` to **Redirect URLs** (for example `https://kupera.in/auth/callback`, `https://app.kupera.in/auth/callback`, and `https://admin.kupera.in/auth/callback`).
@@ -251,7 +232,8 @@ SET role = 'super_admin'
 WHERE id = (
   SELECT id FROM auth.users
   WHERE email = 'admin@example.com'
-);
+)
+AND active = true;
 ```
 
-The Auth profile trigger intentionally ignores `super_admin` signup metadata. Do not expose service-role credentials or role assignment to the browser.
+The Auth profile trigger intentionally ignores `super_admin` signup metadata. The account must be active and must be granted through this trusted SQL process. Do not expose service-role credentials or role assignment to the browser.

@@ -7,7 +7,6 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/lib/supabase/client';
 import { Loader2, CreditCard, Calendar, ShieldCheck } from 'lucide-react';
-import Script from 'next/script';
 
 interface TenantRentCheckoutProps {
   open: boolean;
@@ -117,7 +116,6 @@ export function TenantRentCheckout({
 
   return (
     <>
-      <Script src="https://checkout.razorpay.com/v1/checkout.js" />
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent className="sm:max-w-md bg-slate-900 border-slate-800 text-white">
           <DialogHeader>
